@@ -19,8 +19,12 @@ The minimap can be **resized in-game**: hold the left mouse button on one of its
 edges (or corners) and drag — the side under the cursor follows the mouse. A thin
 frame in Kenshi's UI colours marks the edges; hovering one brightens that side
 and shows a small **"Drag to resize"** hint, so the edge is discoverable before
-the first drag. The size and position are remembered in `MiniMapLayout.txt` next
-to `MiniMap.dll`.
+the first drag. It can also be **moved**: the translucent bar across the top of
+the map (directly under the frame, so the two read as one rim) is a title bar —
+hold the left button on it and drag, and the whole minimap follows the cursor.
+Hovering it shows **"Drag to move"**. Only the thin frame itself still resizes the
+top edge. The size and position are remembered in `MiniMapLayout.txt` next to
+`MiniMap.dll`.
 
 Markers outside the visible window are skipped, except your own markers, which
 are pinned to the minimap edge so they are always visible.
@@ -52,6 +56,7 @@ player's own markers stay drawn on the big map even while it is open.
 | Middle-click on the minimap | drop one of your own markers at that spot |
 | Middle-click again near one of your markers | pick that marker up again (on either map) |
 | Hold the left mouse button on a minimap edge and drag | resize the minimap (corners resize both sides at once); hovering the edge first shows a **"Drag to resize"** hint |
+| Hold the left mouse button on the bar across the top of the minimap and drag | move the whole minimap; hovering the bar first shows a **"Drag to move"** hint |
 | Type a name, then Enter (right after dropping) | name the marker — the box starts empty and shows what you type; Escape or an empty box keeps the automatic name (`Marker 3`) |
 | Walk up to one of your markers | the marker is picked up automatically |
 
@@ -64,8 +69,8 @@ Your markers are stored in `MiniMapMarkers.txt` next to `MiniMap.dll` as
 `name <TAB> x <TAB> y`, where `x`/`y` are fractions of the whole world map.
 
 The minimap's own size and position are stored in `MiniMapLayout.txt` next to
-`MiniMap.dll` as `left top width height`, and are written when an edge drag
-finishes. Delete that file to get the default 300×300 map at (8, 8) back.
+`MiniMap.dll` as `left top width height`, and are written when a resize or move
+drag finishes. Delete that file to get the default 300×300 map at (8, 8) back.
 
 The *defaults* (size, corner offsets, zoom, marker lifetimes, radii, icons) are
 tunable in `include/MiniMapConfig.h` — `kViewZoom` controls the zoom
@@ -173,7 +178,9 @@ The plugin is a `KenshiLib` plugin DLL, built the same way as the reference
    middle click is a physical-button poll too (the overlay is mouse-transparent,
    so it can never receive a click itself), **resizing** polls the left button
    the same way (press inside an edge zone, then follow the mouse delta until
-   the button comes up), and the rename box
+   the button comes up), **moving** polls the same button with the press landing
+   on the bar directly under the frame instead (then the whole map follows the
+   delta), and the rename box
    (a plain `TextBox`) reads its keys with `GetAsyncKeyState()` /
    `ToUnicode()`. MyGUI's `EditBox` is deliberately not used: it needs
    `InputManager::setKeyFocusWidget()`, which crashed the game. The key state that
@@ -336,10 +343,15 @@ logs which hooks were installed:
   (left,top)` bracket an edge drag; the second line is also when
   `MiniMapLayout.txt` is written. A press on the edge that never moved does not
   log the second line and changes nothing.
-- `MiniMap: resize frame and hover hint created` confirms the decorative frame
-  and the "Drag to resize" panel were built; `hover hint unavailable` means the
-  game's `Kenshi_GenericTextBoxFlatSmall` layout could not be created (the frame
-  itself still works and the drag is unaffected).
+- `MiniMap: move drag started at (left,top)` / `MiniMap: moved to (left,top) size
+  WxH` bracket a drag of the top bar; the second line writes `MiniMapLayout.txt`
+  as well. A plain click on the bar changes nothing and logs no second line. The
+  press diagnostic (`MiniMap: left press at ... edge=(..) move=yes|no`) says which
+  of the two handles the press hit.
+- `MiniMap: resize frame, move bar and hover hint created` confirms the decorative
+  frame, the move bar and the "Drag to resize" / "Drag to move" panel were built;
+  `hover hint unavailable` means the game's `Kenshi_GenericTextBoxFlatSmall`
+  layout could not be created (the frame, the bar and both drags still work).
 - The arrow does not point the way the character faces → tune
   `kPlayerIconAngleOffset` / `kPlayerIconAngleSign` in `MiniMapConfig.h`
   (the offset is in radians; `3.14159` = 180 degrees).

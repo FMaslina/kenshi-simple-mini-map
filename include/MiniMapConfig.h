@@ -26,22 +26,37 @@ namespace MiniMapConfig
     // Where the last size/position is remembered (next to MiniMap.dll).
     const char* const kLayoutFileName = "MiniMapLayout.txt";
 
-    // --- frame and resize hint -------------------------------------------
+    // --- frame and drag hints --------------------------------------------
     // A thin frame in Kenshi's UI colours is drawn just inside the minimap
     // edge. It is pure decoration: every widget stays mouse-transparent, and
-    // the drag itself is still polled (see PollResize()).
+    // the drag itself is still polled (see PollLayoutDrag()). The move bar is
+    // the same kind of decorated, mouse-transparent widget.
     //
     // Hovering one of the resize zones brightens that side of the frame and
     // shows a small "Drag to resize" hint next to the cursor, so the edge is
-    // discoverable without having to click it first.
+    // discoverable without having to click it first. The move bar behaves the
+    // same way with its own "Drag to move" hint.
     const char* const kFrameSkin     = "WhiteSkin";   // solid white 2x2 skin
     const int         kFrameOuterPx  = 1;             // dark line at the edge
     const int         kFrameInnerPx  = 2;             // light line inside it
     const int         kFrameCornerPx = 5;             // corner accent size
     const char* const kHintSkin      = "Kenshi_GenericTextBoxFlatSmall";
     const char* const kHintText      = "Drag to resize";
+    const char* const kMoveHintText  = "Drag to move";
     const int         kHintWidth     = 150;
     const int         kHintHeight    = 32;
+
+    // --- moving -----------------------------------------------------------
+    // The whole minimap is dragged by a strip directly under the frame across
+    // its top edge, drawn as a small "title bar" over the map. It starts where
+    // the frame ends, so the two read as one rim, and it is inset from the
+    // left/right edges. The bar is hit-tested before the top edge: otherwise the
+    // rows it covers would still start a resize. The edge zones outside the bar
+    // (left/right/corners) keep their full reach. The position is stored in the
+    // same layout file.
+    const int   kMoveBarOffsetPx = kFrameOuterPx + kFrameInnerPx;   // under the frame
+    const int   kMoveBarHeightPx = 14;
+    const int   kMoveBarInsetPx  = kResizeGrabPx + 1;   // clear of the side edges
 
     // --- zoom -------------------------------------------------------------
     // The minimap shows this fraction of the whole world map, centred on the
