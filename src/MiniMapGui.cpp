@@ -308,19 +308,21 @@ namespace
     }
 
     // -------------------------------------------------------------------------
-    // Resizing the minimap by dragging one of its edges.
+    // Resizing the minimap by dragging one of its edges, and moving the whole
+    // minimap by dragging the bar across its top.
     //
     // The overlay is mouse-transparent (needMouseFocus == false) so the game's
     // own input in the top-left corner keeps working, and MyGUI's event
     // delegates are not usable in this build either (see the note above
     // PollMinimapClick). The left mouse button is therefore polled exactly like
-    // the middle button: a press that starts inside the edge zone begins a drag,
-    // and every frame while the button is down recomputes the layout from the
-    // mouse delta.
+    // the middle button: a press inside one of the handles begins a drag, and
+    // every frame while the button is down recomputes the layout from the mouse
+    // delta.
     //
     // Dragging the right/bottom edge moves that edge; dragging the left/top edge
     // moves the origin instead, so the opposite edge stays where it is - that is
-    // what makes dragging a corner feel natural.
+    // what makes dragging a corner feel natural. A press inside the move bar
+    // takes the whole map along with the cursor instead.
     // -------------------------------------------------------------------------
     bool g_resizing = false;          // a drag is in progress
     bool g_resizeLeftDown = false;    // previous frame's button state
@@ -333,6 +335,16 @@ namespace
     int  g_resizeStartTop = 0;
     int  g_resizeStartW = 0;
     int  g_resizeStartH = 0;
+
+    // Moving the whole minimap by its top bar. The same polled button drives it
+    // as the resize, but a drag is always either one or the other: the press
+    // position decides which (see PollLayoutDrag()).
+    bool g_moving = false;
+    bool g_moveChanged = false;
+    int  g_moveStartMouseX = 0;
+    int  g_moveStartMouseY = 0;
+    int  g_moveStartLeft = 0;
+    int  g_moveStartTop = 0;
 
     // Layout currently pushed into the widgets. -1 forces the first apply.
     int  g_appliedLeft = -1;
@@ -354,13 +366,16 @@ namespace
     MyGUI::Widget*  g_frameOuter[FrameSideCount] = {};
     MyGUI::Widget*  g_frameInner[FrameSideCount] = {};
     MyGUI::Widget*  g_frameCorner[FrameCornerCount] = {};
+    MyGUI::Widget*  g_moveBar = nullptr;   // "title bar" that drags the map
     MyGUI::TextBox* g_hintBox = nullptr;
 
     int  g_hoverEdgeX = 0;         // edge under the cursor (-1/0/+1)
     int  g_hoverEdgeY = 0;
+    bool g_hoverMoveBar = false;   // the move bar is under the cursor
     bool g_hintVisible = false;
     int  g_hintX = 0;
     int  g_hintY = 0;
+    std::string g_hintText;        // caption currently in g_hintBox
 
     // Kenshi's own UI palette: Main #afa68b on Secondary #140806.
     MyGUI::Colour FrameDark()
@@ -374,6 +389,17 @@ namespace
     MyGUI::Colour FrameHover()
     {
         return MyGUI::Colour(1.0f, 0.94f, 0.82f, 0.95f);
+    }
+
+    // The move bar is a translucent dark strip across the top of the map, like
+    // a window title bar; it turns light while the cursor is over it.
+    MyGUI::Colour MoveBarIdle()
+    {
+        return MyGUI::Colour(0.078f, 0.031f, 0.024f, 0.55f);
+    }
+    MyGUI::Colour MoveBarHover()
+    {
+        return MyGUI::Colour(0.686f, 0.651f, 0.545f, 0.80f);
     }
 
     // Paints the frame for the current hover state. Only the light parts change:
@@ -406,6 +432,18 @@ namespace
             if (g_frameCorner[CornerBL])
                 g_frameCorner[CornerBL]->setColour((ex < 0 && ey > 0) ? hover : light);
         });
+    }
+
+    // Paints the move bar for the current hover state.
+    void SetMoveBarHighlight(bool hover)
+    {
+        if (hover == g_hoverMoveBar)
+            return;
+        g_hoverMoveBar = hover;
+        if (!g_moveBar)
+            return;
+        TryStep("moveBar->setColour",
+                [&] { g_moveBar->setColour(hover ? MoveBarHover() : MoveBarIdle()); });
     }
 
     // Positions the frame bars/corners for a new map size. Called from
@@ -444,6 +482,17 @@ namespace
                 g_frameCorner[CornerBR]->setCoord(w - corner, h - corner, corner, corner);
             if (g_frameCorner[CornerBL])
                 g_frameCorner[CornerBL]->setCoord(0, h - corner, corner, corner);
+
+            // The move bar spans the top of the map between the corners, directly
+            // under the frame, so both handles stay usable at any size.
+            if (g_moveBar)
+            {
+                const int inset = MiniMapConfig::kMoveBarInsetPx;
+                const int bw = w - inset * 2;
+                g_moveBar->setCoord(inset, MiniMapConfig::kMoveBarOffsetPx,
+                                    bw > 0 ? bw : 0,
+                                    MiniMapConfig::kMoveBarHeightPx);
+            }
         });
     }
 
@@ -461,10 +510,22 @@ namespace
         h = size.height;
     }
 
-    // Shows, moves or hides the small "Drag to resize" panel. The panel is a
-    // child of the root, so its coordinates are relative to the minimap; it is
-    // also kept on screen when the map itself sits against a screen edge.
-    void UpdateResizeHint(int rx, int ry, int ex, int ey, bool show)
+    // Swaps the hint's text only when it differs: setCaption() rebuilds the
+    // layout's text, so it is not called every frame.
+    void SetHintText(const char* caption)
+    {
+        if (!g_hintBox || !caption || g_hintText == caption)
+            return;
+        g_hintText = caption;
+        MyGuiCompat::UStringHolder text(caption);
+        TryStep("hint->setCaption", [&] { g_hintBox->setCaption(text.Get()); });
+    }
+
+    // Shows, moves or hides the small "Drag to resize" / "Drag to move" panel.
+    // The panel is a child of the root, so its coordinates are relative to the
+    // minimap; it is also kept on screen when the map itself sits against a
+    // screen edge.
+    void UpdateResizeHint(int rx, int ry, int ex, int ey, bool show, const char* caption)
     {
         if (!g_hintBox)
             return;
@@ -478,6 +539,8 @@ namespace
             }
             return;
         }
+
+        SetHintText(caption);
 
         const int hw = MiniMapConfig::kHintWidth;
         const int hh = MiniMapConfig::kHintHeight;
@@ -632,10 +695,38 @@ namespace
             std::to_string(MiniMapLayout::Top()) + ")");
     }
 
+    // Is the cursor on the move bar? It starts directly under the frame and is
+    // inset from the left/right edges, so it only overlaps the frame itself -
+    // which is why it is tested before the edge zones (see PollLayoutDrag()).
+    bool HitTestMoveBar(int mx, int my)
+    {
+        const int w = MiniMapLayout::Width();
+        const int inset = MiniMapConfig::kMoveBarInsetPx;
+        if (mx < inset || mx >= w - inset)
+            return false;
+        const int barTop = MiniMapConfig::kMoveBarOffsetPx;
+        return my >= barTop && my < barTop + MiniMapConfig::kMoveBarHeightPx;
+    }
+
+    void FinishMove()
+    {
+        if (!g_moving)
+            return;
+        g_moving = false;
+        if (!g_moveChanged)
+            return;   // a plain click on the bar, nothing to store
+        g_moveChanged = false;
+        MiniMapLayout::Save();
+        Logger::Info("MiniMap: moved to (" + std::to_string(MiniMapLayout::Left()) + "," +
+            std::to_string(MiniMapLayout::Top()) + ") size " +
+            std::to_string(MiniMapLayout::Width()) + "x" +
+            std::to_string(MiniMapLayout::Height()));
+    }
+
     // `enabled` is false while the overlay is hidden: the button edge is still
     // tracked (so a press that happens meanwhile is not replayed as a fresh
-    // drag), but nothing is resized then.
-    void PollResize(bool enabled)
+    // drag), but nothing is resized or moved then.
+    void PollLayoutDrag(bool enabled)
     {
         const bool down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
         const bool pressed = down && !g_resizeLeftDown;
@@ -644,8 +735,10 @@ namespace
         if (!enabled)
         {
             FinishResize();   // keep what was reached, but stop dragging
-            UpdateResizeHint(0, 0, 0, 0, false);
+            FinishMove();
+            UpdateResizeHint(0, 0, 0, 0, false, MiniMapConfig::kHintText);
             SetFrameHighlight(0, 0);
+            SetMoveBarHighlight(false);
             return;
         }
 
@@ -653,33 +746,89 @@ namespace
         if (!im)
         {
             FinishResize();
-            UpdateResizeHint(0, 0, 0, 0, false);
+            FinishMove();
+            UpdateResizeHint(0, 0, 0, 0, false, MiniMapConfig::kHintText);
             SetFrameHighlight(0, 0);
+            SetMoveBarHighlight(false);
             return;
         }
         const MyGUI::IntPoint mouse = im->getMousePosition();
         const int rx = mouse.left - MiniMapLayout::Left();
         const int ry = mouse.top - MiniMapLayout::Top();
 
+        if (g_moving)
+        {
+            int viewW = 0, viewH = 0;
+            GetViewSize(viewW, viewH);
+            if (viewW < 200)
+                viewW = 100000;   // unknown view size: the map just stays put
+            if (viewH < 200)
+                viewH = 100000;
+
+            const int dx = mouse.left - g_moveStartMouseX;
+            const int dy = mouse.top - g_moveStartMouseY;
+            const int w = MiniMapLayout::Width();
+            const int h = MiniMapLayout::Height();
+
+            // The whole map follows the cursor but never leaves the screen: the
+            // size does not change here, so only the origin is clamped. The
+            // right/bottom clamp keeps the same kScreenMargin that
+            // ClampLayoutToView() enforces - otherwise dragging the map against
+            // an edge would shrink it a little more every frame.
+            const int margin = MiniMapConfig::kScreenMargin;
+            const int left = ClampI(g_moveStartLeft + dx, 0, viewW - w - margin);
+            const int top  = ClampI(g_moveStartTop + dy, 0, viewH - h - margin);
+
+            if (MiniMapLayout::Set(left, top, w, h))
+            {
+                g_moveChanged = true;
+                // Push the new origin into the widgets right away: the hint
+                // below is placed relative to the map, so it must use the
+                // position the map already has this frame.
+                UpdateLayoutWidgets();
+            }
+
+            // Keep the bar bright and the hint next to the cursor for the whole
+            // drag, even when the cursor leaves the bar.
+            SetFrameHighlight(0, 0);
+            SetMoveBarHighlight(true);
+            UpdateResizeHint(mouse.left - MiniMapLayout::Left(),
+                             mouse.top - MiniMapLayout::Top(),
+                             0, 0, true, MiniMapConfig::kMoveHintText);
+
+            if (!down)
+                FinishMove();
+            return;
+        }
+
         if (!g_resizing)
         {
-            const ResizeEdges hover = HitTestEdges(rx, ry);
+            // The move bar is hit-tested first: it starts right under the frame,
+            // i.e. inside the top resize zone, and its rows must move rather than
+            // resize. It is inset from the sides, so the left/right/corner zones
+            // keep their full reach.
+            const bool overBar = HitTestMoveBar(rx, ry);
+            const ResizeEdges hover = overBar ? ResizeEdges{ 0, 0 } : HitTestEdges(rx, ry);
             const bool overEdge = hover.x != 0 || hover.y != 0;
 
             // The frame is always visible; hovering an edge brightens that side
-            // and brings up the "Drag to resize" hint. This runs even when the
-            // button is not down, so the edge advertises itself before the
-            // player tries to drag it.
+            // and brings up the "Drag to resize" hint, hovering the move bar does
+            // the same with "Drag to move". This runs even when the button is not
+            // down, so both handles advertise themselves before the first drag.
             SetFrameHighlight(hover.x, hover.y);
-            UpdateResizeHint(rx, ry, hover.x, hover.y, overEdge);
+            SetMoveBarHighlight(overBar);
+            if (overBar)
+                UpdateResizeHint(rx, ry, 0, 0, true, MiniMapConfig::kMoveHintText);
+            else
+                UpdateResizeHint(rx, ry, hover.x, hover.y, overEdge, MiniMapConfig::kHintText);
 
             if (!pressed)
                 return;
 
             // Diagnostics: a left press this close to the minimap is rare, so a
             // few of them are logged. The line says exactly where MyGUI thinks
-            // the cursor is and which edge zone (if any) that is - it tells a
-            // missed button apart from a missed edge.
+            // the cursor is and which handle (if any) that is - it tells a
+            // missed button apart from a missed handle.
             static int s_pressLogs = 0;
             const int zone = MiniMapConfig::kResizeGrabPx;
             if (s_pressLogs < 20 &&
@@ -692,10 +841,25 @@ namespace
                     std::to_string(mouse.top) + ") rel=(" + std::to_string(rx) + "," +
                     std::to_string(ry) + ") size=" + std::to_string(MiniMapLayout::Width()) + "x" +
                     std::to_string(MiniMapLayout::Height()) + " edge=(" +
-                    std::to_string(hover.x) + "," + std::to_string(hover.y) + ")");
+                    std::to_string(hover.x) + "," + std::to_string(hover.y) + ") move=" +
+                    (overBar ? "yes" : "no"));
             }
 
-            if (hover.x == 0 && hover.y == 0)
+            if (overBar)
+            {
+                g_moving = true;
+                g_moveChanged = false;
+                g_moveStartMouseX = mouse.left;
+                g_moveStartMouseY = mouse.top;
+                g_moveStartLeft = MiniMapLayout::Left();
+                g_moveStartTop = MiniMapLayout::Top();
+                Logger::Info("MiniMap: move drag started at (" +
+                    std::to_string(MiniMapLayout::Left()) + "," +
+                    std::to_string(MiniMapLayout::Top()) + ")");
+                return;
+            }
+
+            if (!overEdge)
                 return;
 
             g_resizing = true;
@@ -757,7 +921,8 @@ namespace
         // Keep the dragged edge highlighted and the hint next to the cursor even
         // when the cursor leaves the original edge zone.
         SetFrameHighlight(g_resizeEdgeX, g_resizeEdgeY);
-        UpdateResizeHint(rx, ry, g_resizeEdgeX, g_resizeEdgeY, true);
+        SetMoveBarHighlight(false);
+        UpdateResizeHint(rx, ry, g_resizeEdgeX, g_resizeEdgeY, true, MiniMapConfig::kHintText);
 
         if (!down)
             FinishResize();
@@ -1000,6 +1165,8 @@ namespace
         g_resizeChanged = false;
         g_resizeEdgeX = 0;
         g_resizeEdgeY = 0;
+        g_moving = false;
+        g_moveChanged = false;
         g_appliedLeft = -1;
         g_appliedTop = -1;
         g_appliedW = -1;
@@ -1013,12 +1180,15 @@ namespace
         }
         for (int i = 0; i < FrameCornerCount; ++i)
             g_frameCorner[i] = nullptr;
+        g_moveBar = nullptr;
         g_hintBox = nullptr;
         g_hoverEdgeX = 0;
         g_hoverEdgeY = 0;
+        g_hoverMoveBar = false;
         g_hintVisible = false;
         g_hintX = 0;
         g_hintY = 0;
+        g_hintText.clear();
         g_typing.clear();
         g_pendingRename = -1;
         DropBigMapPool();
@@ -1779,7 +1949,27 @@ namespace
                 g_frameCorner[i] = CreateFrameBar(root, std::string("frame corner ") + kCorners[i], light);
         }
 
-        // --- "Drag to resize" hint ------------------------------------------
+        // --- move bar -------------------------------------------------------
+        // A title-bar-like strip across the top of the map: the whole minimap is
+        // dragged by it, while the thin edge above it keeps resizing. Created
+        // after the frame so it is drawn over the frame's top bars.
+        g_moveBar = CreateFrameBar(root, "move bar", MoveBarIdle());
+        if (g_moveBar)
+        {
+            const int inset = MiniMapConfig::kMoveBarInsetPx;
+            TryStep("moveBar->setCoord",
+                    [&] {
+                        g_moveBar->setCoord(inset, MiniMapConfig::kMoveBarOffsetPx,
+                                            MiniMapLayout::Width() - inset * 2,
+                                            MiniMapConfig::kMoveBarHeightPx);
+                    });
+        }
+        else
+        {
+            Logger::Warn("MiniMap: move bar unavailable - the map cannot be dragged");
+        }
+
+        // --- "Drag to resize" / "Drag to move" hint --------------------------
         // The game's own beige text-box layout is what its tooltips look like,
         // and its dark text stays readable on the light panel. The layout
         // re-applies its own position, so setCoord() is called afterwards.
@@ -1805,8 +1995,9 @@ namespace
             TryStep("hint->setVisible(false)", [&] { hint->setVisible(false); });
         }
         g_hintBox = hint;
+        g_hintText = hint ? MiniMapConfig::kHintText : std::string();
         if (hint)
-            Logger::Info("MiniMap: resize frame and hover hint created");
+            Logger::Info("MiniMap: resize frame, move bar and hover hint created");
         else
             Logger::Warn("MiniMap: resize frame created, hover hint unavailable");
 
@@ -2399,8 +2590,8 @@ namespace MiniMapGui
             // A name box must never be left up over the character creation.
             if (g_renaming)
                 CancelRename();
-            PollResize(false);   // no edge dragging on a menu screen, but keep
-                                 // the button edge tracked
+            PollLayoutDrag(false);   // no edge dragging on a menu screen, but keep
+                                     // the button edge tracked
             return;
         }
         if (hidden)
@@ -2415,10 +2606,11 @@ namespace MiniMapGui
         }
 
         // --- size / position of the overlay -----------------------------------
-        // Dragging one of the edges resizes the minimap. The layout is applied
-        // to the widgets before anything is positioned with it, so the markers
-        // and the player arrow follow a new size on the very same frame.
-        PollResize(!hidden);
+        // Dragging one of the edges resizes the minimap; dragging the bar across
+        // its top moves the whole map. The layout is applied to the widgets
+        // before anything is positioned with it, so the markers and the player
+        // arrow follow a new size on the very same frame.
+        PollLayoutDrag(!hidden);
         ClampLayoutToView();
         UpdateLayoutWidgets();
 

@@ -67,6 +67,10 @@ Copy-Item .\RE_Kenshi.json          $dest -Force
 - **Hold the left mouse button on a minimap edge** and drag: the map resizes,
   and `MiniMap: resized to ...` appears in the log. Hovering an edge first
   brightens the frame and shows a **"Drag to resize"** hint.
+- **Hold the left mouse button on the bar across the top of the minimap** and
+  drag: the whole map moves, and `MiniMap: moved to ...` appears in the log.
+  Hovering the bar first shows a **"Drag to move"** hint. The thin edge above the
+  bar still resizes, so the two drags never fight over the same pixels.
 
 ## Removing
 

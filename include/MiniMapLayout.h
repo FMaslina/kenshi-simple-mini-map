@@ -3,9 +3,10 @@
 // MiniMap - the overlay's live size and position.
 //
 // The defaults live in MiniMapConfig (kWidth / kHeight / kOffset*), but the
-// player can change them at runtime by dragging one of the minimap's edges, so
-// they cannot be compile-time constants any more. The last layout is written
-// next to MiniMap.dll so a resize survives a restart.
+// player can change them at runtime by dragging one of the minimap's edges
+// (resize) or the bar across its top (move), so they cannot be compile-time
+// constants any more. The last layout is written next to MiniMap.dll so a
+// resize / move survives a restart.
 //
 // Only the GUI thread touches this (Update() runs on the game's UI thread).
 // -----------------------------------------------------------------------------
