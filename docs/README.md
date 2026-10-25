@@ -15,6 +15,13 @@ default) and mirrors the markers that matter:
 - **the player's own arrow** at the centre of the minimap, turning with the
   direction the *character* faces.
 
+The minimap can be **resized in-game**: hold the left mouse button on one of its
+edges (or corners) and drag — the side under the cursor follows the mouse. A thin
+frame in Kenshi's UI colours marks the edges; hovering one brightens that side
+and shows a small **"Drag to resize"** hint, so the edge is discoverable before
+the first drag. The size and position are remembered in `MiniMapLayout.txt` next
+to `MiniMap.dll`.
+
 Markers outside the visible window are skipped, except your own markers, which
 are pinned to the minimap edge so they are always visible.
 
@@ -44,6 +51,7 @@ player's own markers stay drawn on the big map even while it is open.
 | Middle-click on the big map (M) | drop one of your own markers there |
 | Middle-click on the minimap | drop one of your own markers at that spot |
 | Middle-click again near one of your markers | pick that marker up again (on either map) |
+| Hold the left mouse button on a minimap edge and drag | resize the minimap (corners resize both sides at once); hovering the edge first shows a **"Drag to resize"** hint |
 | Type a name, then Enter (right after dropping) | name the marker — the box starts empty and shows what you type; Escape or an empty box keeps the automatic name (`Marker 3`) |
 | Walk up to one of your markers | the marker is picked up automatically |
 
@@ -55,9 +63,14 @@ overlaps its icon on the minimap — see `kMarkerReachViewFraction`.
 Your markers are stored in `MiniMapMarkers.txt` next to `MiniMap.dll` as
 `name <TAB> x <TAB> y`, where `x`/`y` are fractions of the whole world map.
 
-Everything (size, corner offsets, zoom, marker lifetimes, radii, icons) is
+The minimap's own size and position are stored in `MiniMapLayout.txt` next to
+`MiniMap.dll` as `left top width height`, and are written when an edge drag
+finishes. Delete that file to get the default 300×300 map at (8, 8) back.
+
+The *defaults* (size, corner offsets, zoom, marker lifetimes, radii, icons) are
 tunable in `include/MiniMapConfig.h` — `kViewZoom` controls the zoom
-(`1.0` = whole world, `8.0` = 1/8 of it).
+(`1.0` = whole world, `8.0` = 1/8 of it), `kMinSize` the smallest size the map
+can be dragged to.
 
 ## How it works
 
@@ -158,7 +171,9 @@ The plugin is a `KenshiLib` plugin DLL, built the same way as the reference
    manager in this build, so all input is polled: the big-map middle click comes
    from the `mapMousePressed` hook plus a physical-button poll, the minimap's own
    middle click is a physical-button poll too (the overlay is mouse-transparent,
-   so it can never receive a click itself), and the rename box
+   so it can never receive a click itself), **resizing** polls the left button
+   the same way (press inside an edge zone, then follow the mouse delta until
+   the button comes up), and the rename box
    (a plain `TextBox`) reads its keys with `GetAsyncKeyState()` /
    `ToUnicode()`. MyGUI's `EditBox` is deliberately not used: it needs
    `InputManager::setKeyFocusWidget()`, which crashed the game. The key state that
@@ -255,8 +270,9 @@ logs which hooks were installed:
   MyGUI call failed and why. Creation is retried once per second, so a failure
   during the world transition heals by itself.
 - `MiniMap: heartbeat updates=...` is written every 5 seconds and proves the
-  per-frame driver is alive. It also prints `src=hooks|widgets|none` (where the
-  town / character markers came from), `hooks=<count>` / `walked=<count>
+  per-frame driver is alive. It also prints `size=<w>x<h> at (<left>,<top>)`
+  (the current layout), `src=hooks|widgets|none` (where the town / character
+  markers came from), `hooks=<count>` / `walked=<count>
   age=<seconds>` (the two caches), `player=yes/no`, `playerNorm=(x,y)` (the
   fraction of the world the minimap is centred on), `ang` (the player arrow's
   angle in radians), `overlay=hidden|shown` (whether a menu screen or an
@@ -316,6 +332,14 @@ logs which hooks were installed:
   how many are drawn on the big map, the distance at which a marker counts as
   reached and how far away the nearest one is (both in world units/metres, using
   `MapScreen::worldSize`).
+- `MiniMap: resize drag started (edge x=.. y=..)` / `MiniMap: resized to WxH at
+  (left,top)` bracket an edge drag; the second line is also when
+  `MiniMapLayout.txt` is written. A press on the edge that never moved does not
+  log the second line and changes nothing.
+- `MiniMap: resize frame and hover hint created` confirms the decorative frame
+  and the "Drag to resize" panel were built; `hover hint unavailable` means the
+  game's `Kenshi_GenericTextBoxFlatSmall` layout could not be created (the frame
+  itself still works and the drag is unaffected).
 - The arrow does not point the way the character faces → tune
   `kPlayerIconAngleOffset` / `kPlayerIconAngleSign` in `MiniMapConfig.h`
   (the offset is in radians; `3.14159` = 180 degrees).

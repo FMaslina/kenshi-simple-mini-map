@@ -2,6 +2,7 @@
 #include "../include/MiniMapGui.h"
 #include "../include/KenshiMirror.h"
 #include "../include/MiniMapConfig.h"
+#include "../include/MiniMapLayout.h"
 #include "../include/MarkerStore.h"
 #include "../include/Logger.h"
 #include "../include/MyGuiCompat.h"
@@ -10,6 +11,7 @@
 #include <mygui/MyGUI_Exception.h>
 #include <mygui/MyGUI_Gui.h>
 #include <mygui/MyGUI_InputManager.h>
+#include <mygui/MyGUI_RenderManager.h>
 #include <mygui/MyGUI_RotatingSkin.h>
 #include <mygui/MyGUI_TextBox.h>
 
@@ -306,6 +308,462 @@ namespace
     }
 
     // -------------------------------------------------------------------------
+    // Resizing the minimap by dragging one of its edges.
+    //
+    // The overlay is mouse-transparent (needMouseFocus == false) so the game's
+    // own input in the top-left corner keeps working, and MyGUI's event
+    // delegates are not usable in this build either (see the note above
+    // PollMinimapClick). The left mouse button is therefore polled exactly like
+    // the middle button: a press that starts inside the edge zone begins a drag,
+    // and every frame while the button is down recomputes the layout from the
+    // mouse delta.
+    //
+    // Dragging the right/bottom edge moves that edge; dragging the left/top edge
+    // moves the origin instead, so the opposite edge stays where it is - that is
+    // what makes dragging a corner feel natural.
+    // -------------------------------------------------------------------------
+    bool g_resizing = false;          // a drag is in progress
+    bool g_resizeLeftDown = false;    // previous frame's button state
+    bool g_resizeChanged = false;     // the drag actually changed the layout
+    int  g_resizeEdgeX = 0;           // -1 = left edge, +1 = right edge, 0 = neither
+    int  g_resizeEdgeY = 0;
+    int  g_resizeStartMouseX = 0;
+    int  g_resizeStartMouseY = 0;
+    int  g_resizeStartLeft = 0;
+    int  g_resizeStartTop = 0;
+    int  g_resizeStartW = 0;
+    int  g_resizeStartH = 0;
+
+    // Layout currently pushed into the widgets. -1 forces the first apply.
+    int  g_appliedLeft = -1;
+    int  g_appliedTop = -1;
+    int  g_appliedW = -1;
+    int  g_appliedH = -1;
+
+    // -------------------------------------------------------------------------
+    // Frame around the map and the "drag to resize" hint.
+    //
+    // The frame is built from plain WhiteSkin widgets (the same way the game
+    // draws solid panels): an outer dark line and an inner light one. Its
+    // widgets are children of the root, so they move and hide with the map, and
+    // they are mouse-transparent like everything else in the overlay.
+    // -------------------------------------------------------------------------
+    enum FrameSide { FrameTop = 0, FrameRight, FrameBottom, FrameLeft, FrameSideCount };
+    enum FrameCorner { CornerTL = 0, CornerTR, CornerBR, CornerBL, FrameCornerCount };
+
+    MyGUI::Widget*  g_frameOuter[FrameSideCount] = {};
+    MyGUI::Widget*  g_frameInner[FrameSideCount] = {};
+    MyGUI::Widget*  g_frameCorner[FrameCornerCount] = {};
+    MyGUI::TextBox* g_hintBox = nullptr;
+
+    int  g_hoverEdgeX = 0;         // edge under the cursor (-1/0/+1)
+    int  g_hoverEdgeY = 0;
+    bool g_hintVisible = false;
+    int  g_hintX = 0;
+    int  g_hintY = 0;
+
+    // Kenshi's own UI palette: Main #afa68b on Secondary #140806.
+    MyGUI::Colour FrameDark()
+    {
+        return MyGUI::Colour(0.078f, 0.031f, 0.024f, 0.85f);
+    }
+    MyGUI::Colour FrameLight()
+    {
+        return MyGUI::Colour(0.686f, 0.651f, 0.545f, 0.65f);
+    }
+    MyGUI::Colour FrameHover()
+    {
+        return MyGUI::Colour(1.0f, 0.94f, 0.82f, 0.95f);
+    }
+
+    // Paints the frame for the current hover state. Only the light parts change:
+    // the dark outer line stays as it is.
+    void SetFrameHighlight(int ex, int ey)
+    {
+        if (ex == g_hoverEdgeX && ey == g_hoverEdgeY)
+            return;
+        g_hoverEdgeX = ex;
+        g_hoverEdgeY = ey;
+
+        const MyGUI::Colour light = FrameLight();
+        const MyGUI::Colour hover = FrameHover();
+        TryStep("frame highlight", [&] {
+            if (g_frameInner[FrameTop])
+                g_frameInner[FrameTop]->setColour(ey < 0 ? hover : light);
+            if (g_frameInner[FrameRight])
+                g_frameInner[FrameRight]->setColour(ex > 0 ? hover : light);
+            if (g_frameInner[FrameBottom])
+                g_frameInner[FrameBottom]->setColour(ey > 0 ? hover : light);
+            if (g_frameInner[FrameLeft])
+                g_frameInner[FrameLeft]->setColour(ex < 0 ? hover : light);
+
+            if (g_frameCorner[CornerTL])
+                g_frameCorner[CornerTL]->setColour((ex < 0 && ey < 0) ? hover : light);
+            if (g_frameCorner[CornerTR])
+                g_frameCorner[CornerTR]->setColour((ex > 0 && ey < 0) ? hover : light);
+            if (g_frameCorner[CornerBR])
+                g_frameCorner[CornerBR]->setColour((ex > 0 && ey > 0) ? hover : light);
+            if (g_frameCorner[CornerBL])
+                g_frameCorner[CornerBL]->setColour((ex < 0 && ey > 0) ? hover : light);
+        });
+    }
+
+    // Positions the frame bars/corners for a new map size. Called from
+    // UpdateLayoutWidgets(), i.e. only when the layout actually changed.
+    void UpdateFrameLayout(int w, int h)
+    {
+        const int outer  = MiniMapConfig::kFrameOuterPx;
+        const int inner  = MiniMapConfig::kFrameInnerPx;
+        const int edge   = outer + inner;
+        const int corner = MiniMapConfig::kFrameCornerPx;
+
+        TryStep("frame layout", [&] {
+            if (g_frameOuter[FrameTop])
+                g_frameOuter[FrameTop]->setCoord(0, 0, w, outer);
+            if (g_frameOuter[FrameBottom])
+                g_frameOuter[FrameBottom]->setCoord(0, h - outer, w, outer);
+            if (g_frameOuter[FrameLeft])
+                g_frameOuter[FrameLeft]->setCoord(0, 0, outer, h);
+            if (g_frameOuter[FrameRight])
+                g_frameOuter[FrameRight]->setCoord(w - outer, 0, outer, h);
+
+            if (g_frameInner[FrameTop])
+                g_frameInner[FrameTop]->setCoord(0, outer, w, inner);
+            if (g_frameInner[FrameBottom])
+                g_frameInner[FrameBottom]->setCoord(0, h - edge, w, inner);
+            if (g_frameInner[FrameLeft])
+                g_frameInner[FrameLeft]->setCoord(outer, 0, inner, h);
+            if (g_frameInner[FrameRight])
+                g_frameInner[FrameRight]->setCoord(w - edge, 0, inner, h);
+
+            if (g_frameCorner[CornerTL])
+                g_frameCorner[CornerTL]->setCoord(0, 0, corner, corner);
+            if (g_frameCorner[CornerTR])
+                g_frameCorner[CornerTR]->setCoord(w - corner, 0, corner, corner);
+            if (g_frameCorner[CornerBR])
+                g_frameCorner[CornerBR]->setCoord(w - corner, h - corner, corner, corner);
+            if (g_frameCorner[CornerBL])
+                g_frameCorner[CornerBL]->setCoord(0, h - corner, corner, corner);
+        });
+    }
+
+    // MyGUI's view size == the coordinate space getMousePosition() returns, so
+    // it is what the minimap has to stay inside of.
+    void GetViewSize(int& w, int& h)
+    {
+        w = 0;
+        h = 0;
+        MyGUI::RenderManager* rm = MyGUI::RenderManager::getInstancePtr();
+        if (!rm)
+            return;
+        const MyGUI::IntSize& size = rm->getViewSize();
+        w = size.width;
+        h = size.height;
+    }
+
+    // Shows, moves or hides the small "Drag to resize" panel. The panel is a
+    // child of the root, so its coordinates are relative to the minimap; it is
+    // also kept on screen when the map itself sits against a screen edge.
+    void UpdateResizeHint(int rx, int ry, int ex, int ey, bool show)
+    {
+        if (!g_hintBox)
+            return;
+
+        if (!show)
+        {
+            if (g_hintVisible)
+            {
+                g_hintVisible = false;
+                TryStep("hintBox->setVisible(false)", [&] { g_hintBox->setVisible(false); });
+            }
+            return;
+        }
+
+        const int hw = MiniMapConfig::kHintWidth;
+        const int hh = MiniMapConfig::kHintHeight;
+
+        // Place it on the inner side of the hovered edge so it never covers the
+        // frame itself.
+        int x = rx + 14;
+        int y = ry + 18;
+        if (ex > 0) x = rx - hw - 14;
+        if (ey > 0) y = ry - hh - 18;
+
+        int viewW = 0, viewH = 0;
+        GetViewSize(viewW, viewH);
+        const int left = MiniMapLayout::Left();
+        const int top = MiniMapLayout::Top();
+        int absX = left + x;
+        int absY = top + y;
+        if (viewW >= hw + 8)
+            absX = ClampI(absX, 4, viewW - hw - 4);
+        if (viewH >= hh + 8)
+            absY = ClampI(absY, 4, viewH - hh - 4);
+        x = absX - left;
+        y = absY - top;
+
+        if (!g_hintVisible)
+        {
+            g_hintVisible = true;
+            TryStep("hintBox->setVisible(true)", [&] { g_hintBox->setVisible(true); });
+        }
+        if (x != g_hintX || y != g_hintY)
+        {
+            g_hintX = x;
+            g_hintY = y;
+            TryStep("hintBox->setCoord", [&] { g_hintBox->setCoord(x, y, hw, hh); });
+        }
+    }
+
+    // Keeps the layout inside the screen: a resolution change or a hand-edited
+    // file must never leave the minimap half off screen.
+    void ClampLayoutToView()
+    {
+        int viewW = 0, viewH = 0;
+        GetViewSize(viewW, viewH);
+        // A view this small is not a real game window - it is a half-initialised
+        // renderer, and shrinking the layout for it would be permanent.
+        if (viewW < 200 || viewH < 200)
+            return;
+
+        const int margin = MiniMapConfig::kScreenMargin;
+        int left = MiniMapLayout::Left();
+        int top = MiniMapLayout::Top();
+        int w = MiniMapLayout::Width();
+        int h = MiniMapLayout::Height();
+
+        // ClampI() returns the low bound when the range is empty, which is
+        // exactly what is wanted on a screen smaller than the minimum size.
+        left = ClampI(left, 0, viewW - MiniMapConfig::kMinSize - margin);
+        top = ClampI(top, 0, viewH - MiniMapConfig::kMinSize - margin);
+        w = ClampI(w, MiniMapConfig::kMinSize, viewW - left - margin);
+        h = ClampI(h, MiniMapConfig::kMinSize, viewH - top - margin);
+        MiniMapLayout::Set(left, top, w, h);
+    }
+
+    // Creates one solid-colour bar of the frame. All bars are children of the
+    // root and mouse-transparent, like the rest of the overlay.
+    MyGUI::Widget* CreateFrameBar(MyGUI::Widget* parent, const std::string& name,
+                                  const MyGUI::Colour& colour)
+    {
+        MyGUI::Widget* bar = nullptr;
+        if (!TryStep("createWidget(" + name + ")",
+                     [&] {
+                         bar = parent->createWidget<MyGUI::Widget>(
+                             MiniMapConfig::kFrameSkin, 0, 0, 1, 1,
+                             MyGUI::Align::Default, "");
+                     }) || !bar)
+            return nullptr;
+
+        TryStep(name + "->setNeedMouseFocus", [&] { MyGuiCompat::SetNeedMouseFocus(bar, false); });
+        TryStep(name + "->setColour", [&] { bar->setColour(colour); });
+        if (g_bg)
+            TryStep(name + "->setDepth", [&] { bar->setDepth(g_bg->getDepth() - 1); });
+        return bar;
+    }
+
+    // Pushes the layout into the widgets. Only called when it actually changed,
+    // so a normal frame costs nothing.
+    void UpdateLayoutWidgets()
+    {
+        if (!g_root)
+            return;
+
+        const int left = MiniMapLayout::Left();
+        const int top = MiniMapLayout::Top();
+        const int w = MiniMapLayout::Width();
+        const int h = MiniMapLayout::Height();
+        if (left == g_appliedLeft && top == g_appliedTop &&
+            w == g_appliedW && h == g_appliedH)
+            return;
+
+        g_appliedLeft = left;
+        g_appliedTop = top;
+        g_appliedW = w;
+        g_appliedH = h;
+
+        TryStep("root->setCoord(layout)", [&] { g_root->setCoord(left, top, w, h); });
+        if (g_bg)
+            TryStep("bg->setCoord(layout)", [&] { g_bg->setCoord(0, 0, w, h); });
+        UpdateFrameLayout(w, h);
+        if (g_renameBox)
+            TryStep("renameBox->setCoord(layout)",
+                    [&] { g_renameBox->setCoord(6, h - 22, w - 12, 18); });
+    }
+
+    struct ResizeEdges { int x; int y; };
+
+    // Which edge (if any) is under the cursor? The coordinates are relative to
+    // the minimap's top-left corner.
+    ResizeEdges HitTestEdges(int mx, int my)
+    {
+        ResizeEdges edges{ 0, 0 };
+        const int w = MiniMapLayout::Width();
+        const int h = MiniMapLayout::Height();
+        if (mx < 0 || my < 0 || mx >= w || my >= h)
+            return edges;
+
+        const int zone = MiniMapConfig::kResizeGrabPx;
+        if (mx <= zone)
+            edges.x = -1;
+        else if (mx >= w - 1 - zone)
+            edges.x = 1;
+        if (my <= zone)
+            edges.y = -1;
+        else if (my >= h - 1 - zone)
+            edges.y = 1;
+        return edges;
+    }
+
+    void FinishResize()
+    {
+        if (!g_resizing)
+            return;
+        g_resizing = false;
+        g_resizeEdgeX = 0;
+        g_resizeEdgeY = 0;
+        if (!g_resizeChanged)
+            return;   // a plain click on the edge, nothing to store
+        g_resizeChanged = false;
+        MiniMapLayout::Save();
+        Logger::Info("MiniMap: resized to " + std::to_string(MiniMapLayout::Width()) + "x" +
+            std::to_string(MiniMapLayout::Height()) + " at (" +
+            std::to_string(MiniMapLayout::Left()) + "," +
+            std::to_string(MiniMapLayout::Top()) + ")");
+    }
+
+    // `enabled` is false while the overlay is hidden: the button edge is still
+    // tracked (so a press that happens meanwhile is not replayed as a fresh
+    // drag), but nothing is resized then.
+    void PollResize(bool enabled)
+    {
+        const bool down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+        const bool pressed = down && !g_resizeLeftDown;
+        g_resizeLeftDown = down;
+
+        if (!enabled)
+        {
+            FinishResize();   // keep what was reached, but stop dragging
+            UpdateResizeHint(0, 0, 0, 0, false);
+            SetFrameHighlight(0, 0);
+            return;
+        }
+
+        MyGUI::InputManager* im = MyGUI::InputManager::getInstancePtr();
+        if (!im)
+        {
+            FinishResize();
+            UpdateResizeHint(0, 0, 0, 0, false);
+            SetFrameHighlight(0, 0);
+            return;
+        }
+        const MyGUI::IntPoint mouse = im->getMousePosition();
+        const int rx = mouse.left - MiniMapLayout::Left();
+        const int ry = mouse.top - MiniMapLayout::Top();
+
+        if (!g_resizing)
+        {
+            const ResizeEdges hover = HitTestEdges(rx, ry);
+            const bool overEdge = hover.x != 0 || hover.y != 0;
+
+            // The frame is always visible; hovering an edge brightens that side
+            // and brings up the "Drag to resize" hint. This runs even when the
+            // button is not down, so the edge advertises itself before the
+            // player tries to drag it.
+            SetFrameHighlight(hover.x, hover.y);
+            UpdateResizeHint(rx, ry, hover.x, hover.y, overEdge);
+
+            if (!pressed)
+                return;
+
+            // Diagnostics: a left press this close to the minimap is rare, so a
+            // few of them are logged. The line says exactly where MyGUI thinks
+            // the cursor is and which edge zone (if any) that is - it tells a
+            // missed button apart from a missed edge.
+            static int s_pressLogs = 0;
+            const int zone = MiniMapConfig::kResizeGrabPx;
+            if (s_pressLogs < 20 &&
+                rx >= -zone && ry >= -zone &&
+                rx < MiniMapLayout::Width() + zone &&
+                ry < MiniMapLayout::Height() + zone)
+            {
+                ++s_pressLogs;
+                Logger::Info("MiniMap: left press at (" + std::to_string(mouse.left) + "," +
+                    std::to_string(mouse.top) + ") rel=(" + std::to_string(rx) + "," +
+                    std::to_string(ry) + ") size=" + std::to_string(MiniMapLayout::Width()) + "x" +
+                    std::to_string(MiniMapLayout::Height()) + " edge=(" +
+                    std::to_string(hover.x) + "," + std::to_string(hover.y) + ")");
+            }
+
+            if (hover.x == 0 && hover.y == 0)
+                return;
+
+            g_resizing = true;
+            g_resizeChanged = false;
+            g_resizeEdgeX = hover.x;
+            g_resizeEdgeY = hover.y;
+            g_resizeStartMouseX = mouse.left;
+            g_resizeStartMouseY = mouse.top;
+            g_resizeStartLeft = MiniMapLayout::Left();
+            g_resizeStartTop = MiniMapLayout::Top();
+            g_resizeStartW = MiniMapLayout::Width();
+            g_resizeStartH = MiniMapLayout::Height();
+            Logger::Info("MiniMap: resize drag started (edge x=" + std::to_string(hover.x) +
+                " y=" + std::to_string(hover.y) + ")");
+            return;
+        }
+
+        int viewW = 0, viewH = 0;
+        GetViewSize(viewW, viewH);
+        if (viewW < 200)
+            viewW = 100000;   // unknown view size: only the minimum applies
+        if (viewH < 200)
+            viewH = 100000;
+
+        const int dx = mouse.left - g_resizeStartMouseX;
+        const int dy = mouse.top - g_resizeStartMouseY;
+        const int margin = MiniMapConfig::kScreenMargin;
+
+        int left = g_resizeStartLeft;
+        int top = g_resizeStartTop;
+        int w = g_resizeStartW;
+        int h = g_resizeStartH;
+
+        if (g_resizeEdgeX > 0)
+        {
+            w = ClampI(g_resizeStartW + dx, MiniMapConfig::kMinSize, viewW - left - margin);
+        }
+        else if (g_resizeEdgeX < 0)
+        {
+            const int right = g_resizeStartLeft + g_resizeStartW;
+            left = ClampI(g_resizeStartLeft + dx, 0, right - MiniMapConfig::kMinSize);
+            w = right - left;
+        }
+
+        if (g_resizeEdgeY > 0)
+        {
+            h = ClampI(g_resizeStartH + dy, MiniMapConfig::kMinSize, viewH - top - margin);
+        }
+        else if (g_resizeEdgeY < 0)
+        {
+            const int bottom = g_resizeStartTop + g_resizeStartH;
+            top = ClampI(g_resizeStartTop + dy, 0, bottom - MiniMapConfig::kMinSize);
+            h = bottom - top;
+        }
+
+        if (MiniMapLayout::Set(left, top, w, h))
+            g_resizeChanged = true;
+
+        // Keep the dragged edge highlighted and the hint next to the cursor even
+        // when the cursor leaves the original edge zone.
+        SetFrameHighlight(g_resizeEdgeX, g_resizeEdgeY);
+        UpdateResizeHint(rx, ry, g_resizeEdgeX, g_resizeEdgeY, true);
+
+        if (!down)
+            FinishResize();
+    }
+
+    // -------------------------------------------------------------------------
     // Is the big map really on screen?
     //
     // MapScreen::getVisible() is only `mainWidget->getVisible()`, i.e. the
@@ -535,6 +993,32 @@ namespace
         g_renaming = false;
         RestoreGameControl();   // never leave the game without keyboard control
         g_overlayHidden = false;   // a fresh root widget is created visible
+        // A GUI rebuild must not leave a half-finished edge drag behind. The
+        // layout itself is a user setting and survives in MiniMapLayout.
+        g_resizing = false;
+        g_resizeLeftDown = false;
+        g_resizeChanged = false;
+        g_resizeEdgeX = 0;
+        g_resizeEdgeY = 0;
+        g_appliedLeft = -1;
+        g_appliedTop = -1;
+        g_appliedW = -1;
+        g_appliedH = -1;
+        // The frame and hint were children of the root and are gone with it; only
+        // the pointers and the hover state are dropped here.
+        for (int i = 0; i < FrameSideCount; ++i)
+        {
+            g_frameOuter[i] = nullptr;
+            g_frameInner[i] = nullptr;
+        }
+        for (int i = 0; i < FrameCornerCount; ++i)
+            g_frameCorner[i] = nullptr;
+        g_hintBox = nullptr;
+        g_hoverEdgeX = 0;
+        g_hoverEdgeY = 0;
+        g_hintVisible = false;
+        g_hintX = 0;
+        g_hintY = 0;
         g_typing.clear();
         g_pendingRename = -1;
         DropBigMapPool();
@@ -1080,9 +1564,9 @@ namespace
         if (!im)
             return false;
         const MyGUI::IntPoint mouse = im->getMousePosition();
-        const int mx = mouse.left - MiniMapConfig::kOffsetLeft;
-        const int my = mouse.top - MiniMapConfig::kOffsetTop;
-        return mx >= 0 && my >= 0 && mx < MiniMapConfig::kWidth && my < MiniMapConfig::kHeight;
+        const int mx = mouse.left - MiniMapLayout::Left();
+        const int my = mouse.top - MiniMapLayout::Top();
+        return mx >= 0 && my >= 0 && mx < MiniMapLayout::Width() && my < MiniMapLayout::Height();
     }
 
     // Physical middle button on the big map. The game's own map mouse handler
@@ -1151,9 +1635,9 @@ namespace
         if (!im)
             return;
         const MyGUI::IntPoint mouse = im->getMousePosition();
-        const int mx = mouse.left - MiniMapConfig::kOffsetLeft;
-        const int my = mouse.top - MiniMapConfig::kOffsetTop;
-        if (mx < 0 || my < 0 || mx >= MiniMapConfig::kWidth || my >= MiniMapConfig::kHeight)
+        const int mx = mouse.left - MiniMapLayout::Left();
+        const int my = mouse.top - MiniMapLayout::Top();
+        if (mx < 0 || my < 0 || mx >= MiniMapLayout::Width() || my >= MiniMapLayout::Height())
             return;
 
         // Only meaningful once the background shows a real crop; before the
@@ -1175,16 +1659,16 @@ namespace
         }
 
         const float fsx = static_cast<float>(g_viewSrcX) +
-            static_cast<float>(mx) / static_cast<float>(MiniMapConfig::kWidth) * static_cast<float>(g_viewSrcW);
+            static_cast<float>(mx) / static_cast<float>(MiniMapLayout::Width()) * static_cast<float>(g_viewSrcW);
         const float fsy = static_cast<float>(g_viewSrcY) +
-            static_cast<float>(my) / static_cast<float>(MiniMapConfig::kHeight) * static_cast<float>(g_viewSrcH);
+            static_cast<float>(my) / static_cast<float>(MiniMapLayout::Height()) * static_cast<float>(g_viewSrcH);
         const float nx = fsx / texW;
         const float ny = fsy / texH;
 
         // The pick-up tolerance is a screen distance, converted with the crop so
         // it means the same thing on the minimap whatever the big map's zoom is.
         const float radiusNorm = static_cast<float>(MiniMapConfig::kMinimapClickRadiusPx) /
-            static_cast<float>(MiniMapConfig::kWidth) * (static_cast<float>(g_viewSrcW) / texW);
+            static_cast<float>(MiniMapLayout::Width()) * (static_cast<float>(g_viewSrcW) / texW);
 
         const int removed = MarkerStore::Get().RemoveNearest(nx, ny, radiusNorm);
         if (removed >= 0)
@@ -1234,8 +1718,8 @@ namespace
                      [&] {
                          root = mgr->createWidget<MyGUI::Widget>(
                              MiniMapConfig::kRootSkin,
-                             MiniMapConfig::kOffsetLeft, MiniMapConfig::kOffsetTop,
-                             MiniMapConfig::kWidth, MiniMapConfig::kHeight,
+                             MiniMapLayout::Left(), MiniMapLayout::Top(),
+                             MiniMapLayout::Width(), MiniMapLayout::Height(),
                              MyGUI::Align::Left | MyGUI::Align::Top,
                              MiniMapConfig::kLayer,
                              MiniMapConfig::kRootName);
@@ -1262,7 +1746,7 @@ namespace
                     [&] {
                         bg = root->createWidget<MyGUI::ImageBox>(
                             MiniMapConfig::kImageSkin, 0, 0,
-                            MiniMapConfig::kWidth, MiniMapConfig::kHeight,
+                            MiniMapLayout::Width(), MiniMapLayout::Height(),
                             MyGUI::Align::Default, "MiniMapBackground");
                     }) && bg)
         {
@@ -1276,6 +1760,55 @@ namespace
         }
         g_bg = bg;
         g_imageBoxVTable = MyGuiCompat::VTable(bg);
+
+        // --- frame around the map -------------------------------------------
+        // Plain WhiteSkin bars in the game's UI colours, exactly how the game
+        // draws its own solid panels. The frame sits above the map and the
+        // markers (depth -1) but below the player arrow, the rename box and the
+        // hover hint, so nothing important is ever hidden by it.
+        {
+            const MyGUI::Colour dark = FrameDark();
+            const MyGUI::Colour light = FrameLight();
+            static const char* const kSides[FrameSideCount] = { "top", "right", "bottom", "left" };
+            for (int i = 0; i < FrameSideCount; ++i)
+                g_frameOuter[i] = CreateFrameBar(root, std::string("frame outer ") + kSides[i], dark);
+            for (int i = 0; i < FrameSideCount; ++i)
+                g_frameInner[i] = CreateFrameBar(root, std::string("frame inner ") + kSides[i], light);
+            static const char* const kCorners[FrameCornerCount] = { "tl", "tr", "br", "bl" };
+            for (int i = 0; i < FrameCornerCount; ++i)
+                g_frameCorner[i] = CreateFrameBar(root, std::string("frame corner ") + kCorners[i], light);
+        }
+
+        // --- "Drag to resize" hint ------------------------------------------
+        // The game's own beige text-box layout is what its tooltips look like,
+        // and its dark text stays readable on the light panel. The layout
+        // re-applies its own position, so setCoord() is called afterwards.
+        MyGUI::TextBox* hint = nullptr;
+        if (TryStep("createWidget(resize hint)",
+                    [&] {
+                        hint = root->createWidget<MyGUI::TextBox>(
+                            MiniMapConfig::kHintSkin, 0, 0,
+                            MiniMapConfig::kHintWidth, MiniMapConfig::kHintHeight,
+                            MyGUI::Align::Default, "MiniMapResizeHint");
+                    }) && hint)
+        {
+            TryStep("hint->setNeedMouseFocus", [&] { MyGuiCompat::SetNeedMouseFocus(hint, false); });
+            TryStep("hint->setTextAlign", [&] { hint->setTextAlign(MyGUI::Align::Center); });
+            MyGuiCompat::UStringHolder text(MiniMapConfig::kHintText);
+            TryStep("hint->setCaption", [&] { hint->setCaption(text.Get()); });
+            TryStep("hint->setCoord",
+                    [&] {
+                        hint->setCoord(0, 0, MiniMapConfig::kHintWidth, MiniMapConfig::kHintHeight);
+                    });
+            if (g_bg)
+                TryStep("hint->setDepth", [&] { hint->setDepth(g_bg->getDepth() - 4); });
+            TryStep("hint->setVisible(false)", [&] { hint->setVisible(false); });
+        }
+        g_hintBox = hint;
+        if (hint)
+            Logger::Info("MiniMap: resize frame and hover hint created");
+        else
+            Logger::Warn("MiniMap: resize frame created, hover hint unavailable");
 
         // --- the player's own arrow (rotating skin) --------------------------
         // Rotation is applied to the widget's main sub-widget. RotatingSkin's
@@ -1333,7 +1866,7 @@ namespace
             // (BUGFIX: this used to call setDepth on the *global*, which is still
             // null while the widget is being built.)
             if (g_bg)
-                TryStep("playerIcon->setDepth", [&] { icon->setDepth(g_bg->getDepth() - 1); });
+                TryStep("playerIcon->setDepth", [&] { icon->setDepth(g_bg->getDepth() - 2); });
 
             g_playerIcon = icon;
         }
@@ -1345,8 +1878,8 @@ namespace
         if (TryStep("createWidget(renameBox)",
                     [&] {
                         box = root->createWidget<MyGUI::TextBox>(
-                            MiniMapConfig::kRenameSkin, 6, MiniMapConfig::kHeight - 22,
-                            MiniMapConfig::kWidth - 12, 18,
+                            MiniMapConfig::kRenameSkin, 6, MiniMapLayout::Height() - 22,
+                            MiniMapLayout::Width() - 12, 18,
                             MyGUI::Align::Default, "MiniMapRenameBox");
                     }) && box)
         {
@@ -1356,11 +1889,11 @@ namespace
             // own position - so the widget is placed explicitly *afterwards*.
             TryStep("renameBox->setCoord",
                     [&] {
-                        box->setCoord(6, MiniMapConfig::kHeight - 22,
-                                      MiniMapConfig::kWidth - 12, 18);
+                        box->setCoord(6, MiniMapLayout::Height() - 22,
+                                      MiniMapLayout::Width() - 12, 18);
                     });
             if (g_bg)
-                TryStep("renameBox->setDepth", [&] { box->setDepth(g_bg->getDepth() - 2); });
+                TryStep("renameBox->setDepth", [&] { box->setDepth(g_bg->getDepth() - 3); });
             TryStep("renameBox->setVisible(false)", [&] { box->setVisible(false); });
         }
         g_renameBox = box;
@@ -1866,6 +2399,8 @@ namespace MiniMapGui
             // A name box must never be left up over the character creation.
             if (g_renaming)
                 CancelRename();
+            PollResize(false);   // no edge dragging on a menu screen, but keep
+                                 // the button edge tracked
             return;
         }
         if (hidden)
@@ -1878,6 +2413,14 @@ namespace MiniMapGui
                 CancelRename();
             g_pendingRename = -1;
         }
+
+        // --- size / position of the overlay -----------------------------------
+        // Dragging one of the edges resizes the minimap. The layout is applied
+        // to the widgets before anything is positioned with it, so the markers
+        // and the player arrow follow a new size on the very same frame.
+        PollResize(!hidden);
+        ClampLayoutToView();
+        UpdateLayoutWidgets();
 
         const unsigned long long now = GetTickCount64();
         MapScreen* ms = GetMapScreen();
@@ -2218,9 +2761,9 @@ namespace MiniMapGui
             const int ih = MiniMapConfig::kPlayerIconSize;
 
             const int px = static_cast<int>((g_lastPlayerNx * static_cast<float>(texW) - viewX) /
-                                            viewW * static_cast<float>(MiniMapConfig::kWidth)) - iw / 2;
+                                            viewW * static_cast<float>(MiniMapLayout::Width())) - iw / 2;
             const int py = static_cast<int>((g_lastPlayerNy * static_cast<float>(texH) - viewY) /
-                                            viewH * static_cast<float>(MiniMapConfig::kHeight)) - ih / 2;
+                                            viewH * static_cast<float>(MiniMapLayout::Height())) - ih / 2;
 
             float angle = g_lastPlayerAngle;
             if (havePlayer && ms && playerCharacter)
@@ -2287,19 +2830,22 @@ namespace MiniMapGui
                      mpy < viewY - mh || mpy > viewY + viewH + mh))
                     continue;
 
-                px = static_cast<int>((mpx - viewX) / viewW * static_cast<float>(MiniMapConfig::kWidth)) - mw / 2;
-                py = static_cast<int>((mpy - viewY) / viewH * static_cast<float>(MiniMapConfig::kHeight)) - mh / 2;
+                px = static_cast<int>((mpx - viewX) / viewW * static_cast<float>(MiniMapLayout::Width())) - mw / 2;
+                py = static_cast<int>((mpy - viewY) / viewH * static_cast<float>(MiniMapLayout::Height())) - mh / 2;
 
                 if (visible[i].clampEdge)
                 {
-                    px = ClampI(px, 2, MiniMapConfig::kWidth - mw - 2);
-                    py = ClampI(py, 2, MiniMapConfig::kHeight - mh - 2);
+                    // Keep pinned markers inside the frame instead of under it.
+                    const int inset = 2 + MiniMapConfig::kFrameOuterPx +
+                                      MiniMapConfig::kFrameInnerPx;
+                    px = ClampI(px, inset, MiniMapLayout::Width() - mw - inset);
+                    py = ClampI(py, inset, MiniMapLayout::Height() - mh - inset);
                 }
             }
             else
             {
-                px = static_cast<int>(visible[i].nx * MiniMapConfig::kWidth) - mw / 2;
-                py = static_cast<int>(visible[i].ny * MiniMapConfig::kHeight) - mh / 2;
+                px = static_cast<int>(visible[i].nx * MiniMapLayout::Width()) - mw / 2;
+                py = static_cast<int>(visible[i].ny * MiniMapLayout::Height()) - mh / 2;
             }
 
             MyGUI::ImageBox* box = nullptr;
@@ -2326,8 +2872,8 @@ namespace MiniMapGui
                 MyGUI::TextBox* label = AcquireLabel(static_cast<size_t>(labelUsed));
                 if (label)
                 {
-                    const int lx = ClampI(px + mw + 2, 0, MiniMapConfig::kWidth - 60);
-                    const int ly = ClampI(py + 2, 0, MiniMapConfig::kHeight - 14);
+                    const int lx = ClampI(px + mw + 2, 0, MiniMapLayout::Width() - 60);
+                    const int ly = ClampI(py + 2, 0, MiniMapLayout::Height() - 14);
                     if (TryStep("place marker label",
                                 [&] {
                                     // The caption needs a MyGUI::UString, which is
@@ -2398,6 +2944,10 @@ namespace MiniMapGui
             s_lastHeartbeat = tick;
             Logger::Info("MiniMap: heartbeat updates=" + std::to_string(s_updates) +
                 " drawn=" + std::to_string(used) + "/" + std::to_string(visible.size()) +
+                " size=" + std::to_string(MiniMapLayout::Width()) + "x" +
+                    std::to_string(MiniMapLayout::Height()) +
+                    " at (" + std::to_string(MiniMapLayout::Left()) + "," +
+                    std::to_string(MiniMapLayout::Top()) + ")" +
                 " src=" + std::string(usedHooks ? "hooks" : (haveWalk ? "widgets" : "none")) +
                 " hooks=" + std::to_string(hookedCount) +
                 " walked=" + std::to_string(g_walkMarkers.size()) +
