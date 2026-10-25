@@ -2,6 +2,7 @@
 #include "../include/Logger.h"
 #include "../include/KenshiMirror.h"
 #include "../include/MiniMapGui.h"
+#include "../include/MiniMapLayout.h"
 #include "../include/MarkerStore.h"
 
 #include <core/Functions.h>
@@ -98,6 +99,7 @@ namespace
         Logger::Info("MiniMap plugin starting (KenshiLib, target Kenshi 1.0.65)");
 
         MarkerStore::Get().Load();
+        MiniMapLayout::Load();
 
         const bool move = InstallHook(&MapScreen::setMovementMarker, (void*)&SetMovementMarkerHook, &g_origSetMovementMarker);
         const bool town = InstallHook(&MapScreen::MapMarkerTown::update, (void*)&TownUpdateHook, &g_origTownUpdate);

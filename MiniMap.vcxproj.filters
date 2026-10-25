@@ -36,6 +36,9 @@
     <ClInclude Include="include\MiniMapGui.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="include\MiniMapLayout.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp">
@@ -51,6 +54,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\MiniMapGui.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\MiniMapLayout.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\MiniMapPlugin.cpp">

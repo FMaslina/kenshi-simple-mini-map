@@ -70,6 +70,7 @@
     <ClInclude Include="include\MarkerStore.h" />
     <ClInclude Include="include\MiniMapConfig.h" />
     <ClInclude Include="include\MiniMapGui.h" />
+    <ClInclude Include="include\MiniMapLayout.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp" />
@@ -79,6 +80,7 @@
     <ClCompile Include="src\Logger.cpp" />
     <ClCompile Include="src\MarkerStore.cpp" />
     <ClCompile Include="src\MiniMapGui.cpp" />
+    <ClCompile Include="src\MiniMapLayout.cpp" />
     <ClCompile Include="src\MiniMapPlugin.cpp" />
   </ItemGroup>
   <ItemGroup>

@@ -64,9 +64,12 @@ Copy-Item .\RE_Kenshi.json          $dest -Force
 - **Middle-click** somewhere on the big map: the minimap gets a marker (and a
   rename box appears for a name). Middle-clicking it again, or walking to it,
   removes it.
+- **Hold the left mouse button on a minimap edge** and drag: the map resizes,
+  and `MiniMap: resized to ...` appears in the log. Hovering an edge first
+  brightens the frame and shows a **"Drag to resize"** hint.
 
 ## Removing
 
 Delete `<Kenshi>\mods\MiniMap\` and disable the mod in the launcher. Your markers
-live in `MiniMapMarkers.txt` inside that folder (delete it too if you no longer
-want them).
+live in `MiniMapMarkers.txt` inside that folder and the minimap's size/position in
+`MiniMapLayout.txt` (delete them too if you no longer want them).

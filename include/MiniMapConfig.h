@@ -5,10 +5,43 @@
 namespace MiniMapConfig
 {
     // --- placement (screen pixels, measured from the top-left corner) -----
-    const int   kWidth      = 300;   // minimap width
-    const int   kHeight     = 300;   // minimap height
+    // Defaults only: the player can resize the minimap at runtime by dragging
+    // one of its edges, and the layout is stored next to the DLL (see
+    // MiniMapLayout.h). These values are used until such a file exists.
+    const int   kWidth      = 300;   // default minimap width
+    const int   kHeight     = 300;   // default minimap height
     const int   kOffsetLeft = 8;
     const int   kOffsetTop  = 8;
+
+    // --- resizing ---------------------------------------------------------
+    // Hold the left mouse button on one of the minimap's edges (or corners) and
+    // drag: the side under the cursor follows the mouse. kResizeGrabPx is how
+    // close to the edge the cursor has to be, kMinSize is the smallest side the
+    // map may shrink to, and kScreenMargin keeps it off the screen border while
+    // it grows.
+    const int   kResizeGrabPx = 7;
+    const int   kMinSize      = 120;
+    const int   kScreenMargin = 4;
+
+    // Where the last size/position is remembered (next to MiniMap.dll).
+    const char* const kLayoutFileName = "MiniMapLayout.txt";
+
+    // --- frame and resize hint -------------------------------------------
+    // A thin frame in Kenshi's UI colours is drawn just inside the minimap
+    // edge. It is pure decoration: every widget stays mouse-transparent, and
+    // the drag itself is still polled (see PollResize()).
+    //
+    // Hovering one of the resize zones brightens that side of the frame and
+    // shows a small "Drag to resize" hint next to the cursor, so the edge is
+    // discoverable without having to click it first.
+    const char* const kFrameSkin     = "WhiteSkin";   // solid white 2x2 skin
+    const int         kFrameOuterPx  = 1;             // dark line at the edge
+    const int         kFrameInnerPx  = 2;             // light line inside it
+    const int         kFrameCornerPx = 5;             // corner accent size
+    const char* const kHintSkin      = "Kenshi_GenericTextBoxFlatSmall";
+    const char* const kHintText      = "Drag to resize";
+    const int         kHintWidth     = 150;
+    const int         kHintHeight    = 32;
 
     // --- zoom -------------------------------------------------------------
     // The minimap shows this fraction of the whole world map, centred on the
