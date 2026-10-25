@@ -128,6 +128,11 @@ class ManagementScreen
 public:
     static ManagementScreen* getSingleton();   // RVA 0x2967F0
 
+    // RVA 0x48B3F0 - is the management window on screen? It is the single window
+    // that hosts the big map, squads, research, factions and the AI screen, so
+    // this one flag covers all of those tabs.
+    bool getVisible();
+
     char _pad0[0xA8];
     MapScreen* mapScreen;                      // 0xA8
 };
@@ -149,6 +154,14 @@ public:
     MyGUI::ImageBox* createImageAbs(MyGUI::Widget* parent, int top, int left,
         int width, int height, const std::string& image);               // 0x73F260
 
+    // --- "is one of the game's interface windows open?" --------------------
+    // All four are the game's own queries, so the minimap never has to guess
+    // from the widget tree which window is up.
+    int getNumOpenInventoryWindows() const;          // RVA 0x6E23B0
+    bool isStatsWindowOpen() const;                  // RVA 0x6E23E0
+    bool inDialogue() const;                         // RVA 0x6E17D0
+    bool hasModalMessage() const;                    // RVA 0x73EA20
+
     // --- fields: only up to the one we read -------------------------------
     char _pad0[0x1C0];
     // The open character editor window. Non-null while the game is editing a
@@ -158,6 +171,27 @@ public:
     void* characterEditor;                           // 0x1C0
 };
 static_assert(offsetof(ForgottenGUI, characterEditor) == 0x1C0, "ForgottenGUI::characterEditor");
+
+// -----------------------------------------------------------------------------
+// ProspectingWindow / OptionsWindow - interface windows that are not part of the
+// management screen, each reached through its own singleton.
+//
+// Only the two queries are mirrored: the classes are never dereferenced beyond
+// that, so their (large) field layout does not have to be reproduced.
+// -----------------------------------------------------------------------------
+class ProspectingWindow
+{
+public:
+    static ProspectingWindow* getSingleton();   // RVA 0x337F50
+    bool getVisible() const;                    // RVA 0x48B7D0
+};
+
+class OptionsWindow
+{
+public:
+    static OptionsWindow* getSingleton();       // RVA 0x4067B0
+    bool isVisible();                           // RVA 0x3E6D20
+};
 
 // -----------------------------------------------------------------------------
 // RootObject / Character / PlayerInterface - the character the player controls.

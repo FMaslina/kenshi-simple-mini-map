@@ -85,7 +85,7 @@ namespace
     bool             g_gameControlTaken = false;
 
     // True while the whole overlay is hidden because the game is showing one of
-    // its menu screens (see MenuScreenActive).
+    // its menu screens or one of its interface windows (see ProbeScreens).
     bool             g_overlayHidden = false;
 
     // The same markers drawn on the big map (inside the game's map image widget).
@@ -1128,13 +1128,17 @@ namespace
     // through the crop the background is showing, which makes the marker land
     // exactly under the cursor whatever the big map's zoom is. A click next to
     // one of the player's own markers picks that one up again.
-    void PollMinimapClick()
+    //
+    // `enabled` is false while the overlay is hidden: the button edge is still
+    // tracked (so a press that happens meanwhile is not replayed as a fresh click
+    // when the minimap comes back), but nothing is dropped then.
+    void PollMinimapClick(bool enabled)
     {
         static bool s_prevDown = false;
         const bool down = (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0;
         const bool pressed = down && !s_prevDown;
         s_prevDown = down;
-        if (!pressed)
+        if (!pressed || !enabled)
             return;
 
         // The minimap is drawn on top of everything, so a click inside its
@@ -1679,6 +1683,86 @@ namespace MiniMapGui
         return false;
     }
 
+    // What the game currently shows over the world, sampled once per frame.
+    // It feeds two things: the overlay's visibility (see UpdateImpl) and the
+    // "screen check" line in the log.
+    struct ScreenProbe
+    {
+        const char* menuWhy = nullptr;     // title screen / character editor
+        const char* windowWhy = nullptr;   // one of the game's interface windows
+
+        // Raw signals behind windowWhy (diagnostics).
+        int  openInventories = 0;
+        bool statsWindow = false;
+        bool dialogue = false;
+        bool modalMessage = false;
+        bool management = false;
+        bool prospecting = false;
+        bool options = false;
+
+        bool InMenu() const { return menuWhy != nullptr; }
+        bool WindowOpen() const { return windowWhy != nullptr; }
+        bool Hidden() const { return InMenu() || WindowOpen(); }
+    };
+
+    // The minimap is a permanent overlay, so it has to step aside for the game's
+    // own *interface windows* as well: inventory (I, loot, trade), character
+    // stats (C), dialogues, message boxes, the management window (map (M),
+    // squads, research, factions, AI), prospecting and the options window. While
+    // one of them is up the player is working in that window - the minimap would
+    // cover a corner of it and swallow middle clicks there.
+    //
+    // Every check is one of the game's own queries, never a guess from the widget
+    // tree, so a window this build does not know about simply does not hide the
+    // overlay instead of hiding it forever.
+    ScreenProbe ProbeScreens()
+    {
+        ScreenProbe p;
+        MenuScreenActive(&p.menuWhy);
+
+        // A menu screen replaces the world, so the windows below cannot be up -
+        // and their singletons may not even exist yet.
+        if (p.InMenu())
+            return p;
+
+        if (::gui)
+        {
+            p.openInventories = ::gui->getNumOpenInventoryWindows();
+            p.statsWindow = ::gui->isStatsWindowOpen();
+            p.dialogue = ::gui->inDialogue();
+            p.modalMessage = ::gui->hasModalMessage();
+        }
+
+        if (ManagementScreen* mgmt = ManagementScreen::getSingleton())
+            p.management = mgmt->getVisible();
+
+        // Only asked for once a world (and its player) exists: these two
+        // singletons are created with the world.
+        if (::ou && ::ou->player)
+        {
+            if (ProspectingWindow* prospecting = ProspectingWindow::getSingleton())
+                p.prospecting = prospecting->getVisible();
+            if (OptionsWindow* options = OptionsWindow::getSingleton())
+                p.options = options->isVisible();
+        }
+
+        if (p.openInventories > 0)
+            p.windowWhy = "inventory window";
+        else if (p.statsWindow)
+            p.windowWhy = "character stats window";
+        else if (p.dialogue)
+            p.windowWhy = "dialogue";
+        else if (p.modalMessage)
+            p.windowWhy = "modal message box";
+        else if (p.management)
+            p.windowWhy = "management screen (map / squads / research / factions)";
+        else if (p.prospecting)
+            p.windowWhy = "prospecting window";
+        else if (p.options)
+            p.windowWhy = "options window";
+        return p;
+    }
+
     static void UpdateImpl(MyGUI::Gui* mgr)
     {
         // The GUI manager is checked every frame: the game rebuilds (and
@@ -1699,13 +1783,19 @@ namespace MiniMapGui
             return;
         }
 
-        // --- the game's own menu screens -------------------------------------
+        // --- what the game shows over the world -------------------------------
         // While the title screen, the character creation or the character editor
         // is up, the overlay must not exist at all: it would cover those screens
-        // and swallow clicks. The state is sampled every frame, so leaving the
-        // screen brings the minimap straight back.
-        const char* menuWhy = nullptr;
-        const bool inMenu = MenuScreenActive(&menuWhy);
+        // and swallow clicks. While one of the game's *interface windows* is up
+        // (inventory, stats, dialogue, map / squads, ...) the world keeps running
+        // and the overlay is only hidden - it is updated as usual, so it is
+        // correct again the moment the window closes.
+        //
+        // The state is sampled every frame, so closing the window brings the
+        // minimap straight back.
+        const ScreenProbe probe = ProbeScreens();
+        const bool inMenu = probe.InMenu();
+        const bool hidden = probe.Hidden();
 
         // Diagnostics: the heartbeat below is only written while the overlay is
         // actually drawn, so the raw state is reported on its own (throttled) -
@@ -1721,7 +1811,15 @@ namespace MiniMapGui
                     " titleScreen=" + ((::au && ::au->titleScreen) ? "yes" : "no") +
                     " characterEditor=" + ((::gui && ::gui->characterEditor) ? "yes" : "no") +
                     " editorMode=" + ((::ou && ::ou->player && ::ou->player->characterEditorMode) ? "yes" : "no") +
-                    " player=" + ((::ou && ::ou->player) ? "yes" : "no"));
+                    " player=" + ((::ou && ::ou->player) ? "yes" : "no") +
+                    " window=" + (probe.windowWhy ? probe.windowWhy : "none") +
+                    " inventories=" + std::to_string(probe.openInventories) +
+                    " stats=" + (probe.statsWindow ? "yes" : "no") +
+                    " dialogue=" + (probe.dialogue ? "yes" : "no") +
+                    " modal=" + (probe.modalMessage ? "yes" : "no") +
+                    " management=" + (probe.management ? "yes" : "no") +
+                    " prospecting=" + (probe.prospecting ? "yes" : "no") +
+                    " options=" + (probe.options ? "yes" : "no"));
             }
         }
 
@@ -1732,7 +1830,9 @@ namespace MiniMapGui
         {
             // Nothing is created before a world (and its player) exists: the
             // widgets would be built into a GUI that is still being assembled.
-            // Nothing is created on a menu screen either (see above).
+            // Nothing is created on a menu screen either (see above). An open
+            // interface window does not matter here - the overlay is created
+            // hidden and shows up when the window closes.
             if (inMenu || !ou || !ou->player)
                 return;
 
@@ -1752,13 +1852,14 @@ namespace MiniMapGui
             }
         }
 
-        if (g_root && inMenu != g_overlayHidden)
+        if (g_root && hidden != g_overlayHidden)
         {
-            g_overlayHidden = inMenu;
-            Logger::Info(inMenu
-                ? std::string("MiniMap: overlay hidden (") + (menuWhy ? menuWhy : "menu screen") + ")"
+            g_overlayHidden = hidden;
+            Logger::Info(hidden
+                ? std::string("MiniMap: overlay hidden (") +
+                      (probe.menuWhy ? probe.menuWhy : (probe.windowWhy ? probe.windowWhy : "menu screen")) + ")"
                 : std::string("MiniMap: overlay shown again"));
-            TryStep("root->setVisible", [&] { g_root->setVisible(!inMenu); });
+            TryStep("root->setVisible", [&] { g_root->setVisible(!hidden); });
         }
         if (inMenu)
         {
@@ -1766,6 +1867,16 @@ namespace MiniMapGui
             if (g_renaming)
                 CancelRename();
             return;
+        }
+        if (hidden)
+        {
+            // The overlay is not drawn while a window covers the screen, so a
+            // rename box that is still up would take the keyboard without being
+            // visible, and a half-typed name belongs to a marker the player can
+            // no longer see. Drop both; the automatic name stays.
+            if (g_renaming)
+                CancelRename();
+            g_pendingRename = -1;
         }
 
         const unsigned long long now = GetTickCount64();
@@ -2248,9 +2359,17 @@ namespace MiniMapGui
                 TryStep("hide unused label", [&] { g_labels[i]->setVisible(false); });
         }
 
-        UpdateRenameBox();
+        // The rename box belongs to a visible overlay: while it is hidden (an
+        // interface window is up) the box stays off, so its polled keys cannot
+        // take the game's keyboard either. The minimap's own middle click is
+        // polled every frame but only acts while the overlay is visible.
+        if (!hidden)
+            UpdateRenameBox();
+        PollMinimapClick(!hidden);
 
-        // Same markers, now on the game's own big map.
+        // Same markers, now on the game's own big map. They stay live even while
+        // the overlay is hidden - opening the big map is one of the windows that
+        // hides the minimap, and the player's markers must still be there.
         UpdateBigMapMarkers(ms);
 
         // A middle press is handled once; as soon as the button is up again the
@@ -2261,11 +2380,11 @@ namespace MiniMapGui
             g_middlePressConsumed = false;
 
         // Middle-click triggers, polled because the game does not forward them to
-        // the overlay (we are mouse-transparent): on the minimap itself
-        // (PollMinimapClick) and on the big map (PollBigMapMiddleClick). They are
-        // mutually exclusive - a click inside the minimap rectangle is the
-        // minimap's business and the big-map poll skips that area.
-        PollMinimapClick();
+        // the overlay (we are mouse-transparent): on the big map
+        // (PollBigMapMiddleClick; the minimap's own poll runs above and only while
+        // the overlay is visible). They are mutually exclusive - a click inside
+        // the minimap rectangle is the minimap's business and the big-map poll
+        // skips that area.
         PollBigMapMiddleClick();
 
         // Periodic proof that the per-frame driver is alive and that the camera
@@ -2292,6 +2411,7 @@ namespace MiniMapGui
                 " crop=(" + std::to_string(g_viewSrcX) + "," + std::to_string(g_viewSrcY) + "," +
                 std::to_string(g_viewSrcW) + "x" + std::to_string(g_viewSrcH) + ")" +
                 (g_viewSet ? "" : " NO-CROP") +
+                " overlay=" + (hidden ? "hidden" : "shown") +
                 " mapShown=" + (mapShown ? "yes" : "no") +
                 " mouseOverMap=" + (BigMapMouseOver(ms) ? "yes" : "no") +
                 " mouseHook=" + (g_hookSawMiddleClick ? "yes" : "no") +
