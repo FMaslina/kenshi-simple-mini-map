@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Shared build settings for the MiniMap plugin. -->
+<Project>
+  <PropertyGroup>
+    <!-- Paths to the KenshiLib SDK (headers) and to a KenshiLib release
+         (KenshiLib.lib + KenshiLib.dll). Override via environment or
+         /p:KenshiLibSdkRoot=... /p:KenshiLibReleaseRoot=... if needed. -->
+    <KenshiLibSdkRoot Condition="'$(KenshiLibSdkRoot)' == ''">C:\Users\Owner\Desktop\KenshiModding\KenshiLib-RE_Kenshi_mods</KenshiLibSdkRoot>
+    <KenshiLibReleaseRoot Condition="'$(KenshiLibReleaseRoot)' == ''">C:\Users\Owner\Desktop\KenshiModding\kMod\third_party\KenshiModding\KenshiLib_v0.5.1</KenshiLibReleaseRoot>
+    <KenshiLibInclude>$(KenshiLibSdkRoot)\Include</KenshiLibInclude>
+    <KenshiLibLibraries>$(KenshiLibSdkRoot)\Libraries</KenshiLibLibraries>
+  </PropertyGroup>
+
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(KenshiLibInclude);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <AdditionalLibraryDirectories>$(KenshiLibReleaseRoot);$(KenshiLibLibraries)\ogre;$(KenshiLibLibraries)\mygui;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>KenshiLib.lib;OgreMain_x64.lib;MyGUIEngine_x64.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+</Project>
