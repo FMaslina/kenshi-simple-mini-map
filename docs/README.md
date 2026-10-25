@@ -28,6 +28,15 @@ meets), so it never covers those screens nor reacts to clicks there. The game's
 own state is what is checked, not the widget tree: the title screen object, the
 open character editor window, and the player's character-editor flag.
 
+The minimap also steps aside for the game's **interface windows**, because it is
+a permanent overlay and would otherwise sit on top of a corner of them (and
+swallow middle clicks there): any **inventory** window (I, loot, trade),
+**character stats** (C), **dialogue**, a **modal message box**, the **management
+screen** (map (M), squads, research, factions, AI), **prospecting** and the
+**options window**. Those do not replace the world, so the minimap keeps being
+updated while hidden and is correct again on the frame the window closes; the
+player's own markers stay drawn on the big map even while it is open.
+
 ## Controls
 
 | Action | Result |
@@ -250,7 +259,9 @@ logs which hooks were installed:
   town / character markers came from), `hooks=<count>` / `walked=<count>
   age=<seconds>` (the two caches), `player=yes/no`, `playerNorm=(x,y)` (the
   fraction of the world the minimap is centred on), `ang` (the player arrow's
-  angle in radians), `mapShown=` / `mouseOverMap=` (whether the big map is up),
+  angle in radians), `overlay=hidden|shown` (whether a menu screen or an
+  interface window is keeping the minimap off), `mapShown=` / `mouseOverMap=`
+  (whether the big map is up),
   `mouseHook=` (whether the game ever forwarded a middle click) and
   `arrow=rotating|fixed`.
 - `MiniMap: map widgets - image=... at (...) container0='MapOverlaysMin' x<n> ...`
@@ -268,15 +279,21 @@ logs which hooks were installed:
   save: the game destroys its whole MyGUI tree and the overlay is rebuilt.
 - `MiniMap: overlay hidden (<reason>)` is written when the minimap is switched
   off because the game showed a menu screen (the reason is `title screen`,
-  `character editor window` or `player characterEditorMode`), and
-  `MiniMap: overlay shown again` when the world is back. The minimap is
-  therefore expected to disappear during new-game character creation.
+  `character editor window` or `player characterEditorMode`) or one of its
+  interface windows (`inventory window`, `character stats window`, `dialogue`,
+  `modal message box`, `management screen (map / squads / research / factions)`,
+  `prospecting window`, `options window`), and `MiniMap: overlay shown again`
+  when it is back. The minimap is therefore expected to disappear during
+  new-game character creation and while an inventory / stats / map / research
+  window is open.
 - `MiniMap: screen check - inMenu=.. titleScreen=.. characterEditor=..
-  editorMode=.. player=..` is written every 15 seconds and reports the raw flags
-  behind that decision. If the minimap wrongly covers the character creation,
-  these flags say which signal was missed; if the minimap never comes back in
-  normal play, the same line shows which signal is stuck (then drop that signal
-  from `MenuScreenActive()` in `src/MiniMapGui.cpp`).
+  editorMode=.. player=.. window=.. inventories=.. stats=.. dialogue=..
+  modal=.. management=.. prospecting=.. options=..` is written every 15 seconds
+  and reports the raw flags behind that decision (`window=` names the window
+  that currently hides the overlay, `none` when it is visible). If the minimap
+  wrongly covers a window, these flags say which signal was missed; if the
+  minimap never comes back in normal play, the same line shows which signal is
+  stuck (then drop that signal from `ProbeScreens()` in `src/MiniMapGui.cpp`).
 - `MiniMap: player arrow rotates (rotating skin at 0x...)` confirms that the
   arrow can actually be turned; without it the log says
   `player arrow has no rotating skin`.
